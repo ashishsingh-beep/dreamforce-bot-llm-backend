@@ -183,6 +183,16 @@ async def _pick_random_api_key(sb: Client) -> Optional[str]:
     except Exception:
         return None
 
+def _lead_already_processed(sb: Client, lead_id: Optional[str]) -> bool:
+    if not lead_id:
+        return False
+    try:
+        resp = sb.table("llm_response").select("lead_id").eq("lead_id", lead_id).limit(1).execute()
+        data = resp.data or []
+        return len(data) > 0
+    except Exception:
+        return False
+
 async def _process_row(row: Dict[str, Any], api_key: str) -> None:
     """Process a single joined row from RPC using stage3.process_leads in a thread."""
     lead_payload = {
@@ -239,6 +249,18 @@ async def _worker_loop():
                 async def _run(row=row):  # capture row by value
                     api_key_local: Optional[str] = None
                     try:
+                        # Idempotency guard: if already has a response, mark sent_to_llm and skip
+                        lead_id = row.get('lead_id')
+                        if _lead_already_processed(sb, lead_id):
+                            try:
+                                sb.table("lead_details").update({"sent_to_llm": True}).eq("lead_id", lead_id).execute()
+                            except Exception:
+                                pass
+                            _worker_logger.info(
+                                f"{_ist_now_str()} | SKIP  | lead_id={lead_id} | name={row.get('name')} | reason=already_processed"
+                            )
+                            return
+
                         # Pick random API key per lead
                         api_key_local = await _pick_random_api_key(sb)
                         if not api_key_local:

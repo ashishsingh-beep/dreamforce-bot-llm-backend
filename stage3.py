@@ -123,10 +123,15 @@ Generate outreach.
 
     # Persist result and update lead flag in Supabase (mirroring batch behavior)
     if result:
+        # Upsert to avoid duplicate key violations if reprocessed
         try:
-            supabase.table("llm_response").insert(result).execute()
+            supabase.table("llm_response").upsert(result, on_conflict="lead_id").execute()
         except Exception as e:
-            print(f"Error inserting lead {lead_info.get('lead_id')}: {e}")
+            # Fallback to insert if upsert not available in client version
+            try:
+                supabase.table("llm_response").insert(result).execute()
+            except Exception as e2:
+                print(f"Error inserting lead {lead_info.get('lead_id')}: {e2}")
 
         # Use the correct column name 'sent_to_llm'
         try:
@@ -145,17 +150,7 @@ def process_leads(leads, api_key: str, wildnet_data, scoring_criteria_and_ICP, m
         print(f"Processing lead {ld.get('lead_id')} - {ld.get('name')}")
         result = process_lead(ld, api_key, wildnet_data, scoring_criteria_and_ICP, message_prompt)
         if result:
-            try:
-                supabase.table("llm_response").insert(result).execute()
-            except Exception as e:
-                print(f"Error inserting lead {ld.get('lead_id')}: {e}")
             llm_responses.append(result)
-
-            # Use the correct column name 'sent_to_llm'
-            try:
-                supabase.table("lead_details").update({"sent_to_llm": True}).eq("lead_id", ld.get("lead_id")).execute()
-            except Exception as e:
-                print(f"Error updating lead {ld.get('lead_id')}: {e}")
         else:
             print(f"Failed to process lead {ld.get('lead_id')}")
     return llm_responses
