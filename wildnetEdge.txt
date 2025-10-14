@@ -1,0 +1,20 @@
+# About WildnetEdge
+WildnetEdge is the next‑gen, AI‑native deep‑tech innovation brand from Wildnet Technologies. We fuse AI, automation, cloud, and custom software engineering to help enterprises and startups scale smarter, faster, and bolder.
+At WildnetEdge, we don’t just deliver Salesforce services—we deliver measurable business outcomes. As a trusted Salesforce consulting and development partner, we bring together strategic thinking, deep platform expertise, and a relentless focus on speed, scale, and simplicity. Whether you’re optimizing your sales processes, automating service workflows, or building custom Salesforce apps, we align every solution to your KPIs and long-term growth goals.
+With 19+ years in tech and a Salesforce-certified team, we’ve helped startups, enterprises, and everything in between streamline operations and turn Salesforce into a real competitive advantage. From first-time implementation to complex multi-cloud environments, WildnetEdge gives you more than a platform; we give you a smarter way to grow.
+
+# What we do:
+• Custom software & mobile app development
+• Generative AI, NLP, computer vision
+• Cloud migration, DevOps & CI/CD
+• Front-end development (React, Angular, Vue)
+• Back-end development
+• Legacy modernization & enterprise apps
+• AR/VR, blockchain, data analytics & AI-driven personalization
+
+# Salseforce Services
+1. Salesforce Consulting: We help you define your CRM strategy, align it with business goals, and choose the right Salesforce solutions for your needs. From Sales Cloud to Service Cloud to Marketing Cloud, our Salesforce consultants map your workflows, identify bottlenecks, and create a roadmap for transformation.
+2. Salesforce Implementation: Our certified Salesforce implementation specialists handle everything from data migration and configuration to user training and change management. We ensure a seamless rollout that minimizes disruption and maximizes adoption. Every implementation is designed around your workflows, with clean architecture and built-in scalability.
+3. Salesforce Integration: We connect Salesforce to your entire tech ecosystem, ERP systems, marketing platforms, legacy tools, third-party apps, and more. With experience in both native and custom integrations, we eliminate data silos and automate cross-platform workflows. You get a single source of truth and real-time visibility across your operations.
+4. Salesforce Customization: We customize everything, from page layouts and fields to automation rules, Lightning components, and Visualfoce pages, so your CRM truly fits your business. Our Salesforce customization services help you improve usability, streamline processes, and tailor user experiences by role, function, and objective.
+5. Salesforce App/software Development: Need more than standard features? We build custom Salesforce apps on the Salesforce Platform, using Apex, Lightning Web Components, and the latest dev tools. Whether it’s internal productivity tools or customer-facing portals, we create secure, scalable, and AppExchange-ready apps that extend Salesforce functionality and deliver real business value.
