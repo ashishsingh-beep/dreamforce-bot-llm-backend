@@ -233,12 +233,15 @@ async def _worker_loop():
 
     while True:
         try:
+            cycle_start = time.monotonic()
             # Fetch eligible rows via RPC (v2 driven by lead_details.sent_to_llm=false)
             rpc_name = "rpc_get_eligible_llm_jobs_v2"
             resp = sb.rpc(rpc_name, {}).execute()
             rows = resp.data or []
 
             if not rows:
+                duration = time.monotonic() - cycle_start
+                print(f"{_ist_now_str()} | CYCLE | total=0, processed=0, skipped=0, errors=0, duration={duration:.2f}s")
                 await asyncio.sleep(POLL_INTERVAL_SEC)
                 continue
 
@@ -259,12 +262,12 @@ async def _worker_loop():
                             _worker_logger.info(
                                 f"{_ist_now_str()} | SKIP  | lead_id={lead_id} | name={row.get('name')} | reason=already_processed"
                             )
-                            return
+                            return "skipped"
 
                         # Pick random API key per lead
                         api_key_local = await _pick_random_api_key(sb)
                         if not api_key_local:
-                            return
+                            return "no_key"
                         # Log START
                         _worker_logger.info(
                             f"{_ist_now_str()} | START | lead_id={row.get('lead_id')} | name={row.get('name')} | api_key={api_key_local}"
@@ -274,11 +277,13 @@ async def _worker_loop():
                         _worker_logger.info(
                             f"{_ist_now_str()} | DONE  | lead_id={row.get('lead_id')} | name={row.get('name')} | api_key={api_key_local}"
                         )
+                        return "processed"
                     except Exception:
                         # Swallow and continue; rely on sent_to_llm flag to retry next loop
                         _worker_logger.exception(
                             f"{_ist_now_str()} | ERROR | lead_id={row.get('lead_id')} | name={row.get('name')} | api_key={api_key_local}"
                         )
+                        return "error"
                     finally:
                         sem.release()
 
@@ -286,10 +291,22 @@ async def _worker_loop():
 
             # Wait for this batch to finish before next poll to avoid hammering
             if tasks:
-                await asyncio.gather(*tasks)
+                results = await asyncio.gather(*tasks)
+                processed_count = sum(1 for r in results if r == "processed")
+                skipped_count = sum(1 for r in results if r in ("skipped", "no_key"))
+                error_count = sum(1 for r in results if r == "error")
+            else:
+                processed_count = skipped_count = error_count = 0
 
             # small pause between batches
             await asyncio.sleep(0.1)
+
+            # Print a per-cycle summary to console
+            duration = time.monotonic() - cycle_start
+            total = len(rows)
+            print(
+                f"{_ist_now_str()} | CYCLE | total={total}, processed={processed_count}, skipped={skipped_count}, errors={error_count}, duration={duration:.2f}s"
+            )
         except Exception:
             # Avoid crashing the loop on transient issues
             await asyncio.sleep(POLL_INTERVAL_SEC)
