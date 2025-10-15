@@ -233,8 +233,8 @@ async def _worker_loop():
 
     while True:
         try:
-            # Fetch eligible rows via RPC that encapsulates the join and filters
-            rpc_name = "rpc_get_eligible_llm_jobs"
+            # Fetch eligible rows via RPC (v2 driven by lead_details.sent_to_llm=false)
+            rpc_name = "rpc_get_eligible_llm_jobs_v2"
             resp = sb.rpc(rpc_name, {}).execute()
             rows = resp.data or []
 
