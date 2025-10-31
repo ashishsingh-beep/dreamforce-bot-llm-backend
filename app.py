@@ -159,10 +159,15 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 _worker_logger = logging.getLogger("llm_worker")
 _worker_logger.setLevel(logging.INFO)
 if not _worker_logger.handlers:
+    # File handler
     _fh = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
-    # We embed our own IST timestamp in the message; keep formatter minimal
     _fh.setFormatter(logging.Formatter("%(message)s"))
     _worker_logger.addHandler(_fh)
+    
+    # Console handler (also logs to stdout/docker logs)
+    _ch = logging.StreamHandler()
+    _ch.setFormatter(logging.Formatter("%(message)s"))
+    _worker_logger.addHandler(_ch)
 
 def _ist_now_str() -> str:
     return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S %Z")

@@ -1,0 +1,37 @@
+services:
+  llm-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-lead-processor
+    ports:
+      - "8000:8000"
+    environment:
+      # Supabase Configuration (REQUIRED - set in .env file)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      
+      # Worker Configuration (optional, with defaults)
+      - POLL_INTERVAL_SEC=${POLL_INTERVAL_SEC:-5}
+      - MAX_CONCURRENCY=${MAX_CONCURRENCY:-3}
+      - LOG_FILE=/app/logs/processing.log
+    volumes:
+      # Persist logs outside container
+      - ./logs:/app/logs
+      # Optional: mount code for development (hot reload)
+      # - ./app.py:/app/app.py
+      # - ./stage3.py:/app/stage3.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - llm-network
+
+networks:
+  llm-network:
+    driver: bridge
