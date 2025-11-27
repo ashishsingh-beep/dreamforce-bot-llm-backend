@@ -23,7 +23,7 @@ Complete setup instructions for deploying the LLM Lead Processing Backend using 
   - Install: https://docs.docker.com/get-docker/
 - **Supabase Project** with the following tables:
   - `all_leads`, `lead_details`, `prompts`, `gemini_api`, `llm_response`
-- **Supabase Service Role Key** (from Project Settings → API)
+- **Supabase Anon Key** (from Project Settings → API)
 
 ### Optional
 - Python 3.11+ (for local development without Docker)
@@ -52,7 +52,7 @@ nano .env  # or use your preferred editor
 **Required values in `.env`:**
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ### 3. Build and Run
@@ -110,6 +110,20 @@ The background worker uses an RPC function to fetch eligible leads.
 -- Use if you want stricter control
 ```
 
+**Option C: `sql/rpc_get_eligible_llm_jobs_with_post.sql` (Recommended for Post Analysis)**
+```sql
+-- This version is v2 plus `al.post_content` for generating `llm_response.post_analysis`
+```
+
+If customizing post analysis via prompts:
+
+```sql
+-- Add column to prompts table for post analysis prompt
+-- File: sql/add_post_analysis_prompt_column.sql
+alter table if exists public.prompts
+  add column if not exists post_analysis_prompt text;
+```
+
 3. Click **Run** to create the function
 
 ### Step 2: Verify Tables Exist
@@ -141,7 +155,7 @@ VALUES ('AIzaSy...');  -- Your actual Gemini API key
 
 ```bash
 SUPABASE_URL=https://xxxxx.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGci...  # From Project Settings → API
+SUPABASE_ANON_KEY=eyJhbGci...  # From Project Settings → API
 ```
 
 ### Worker Tuning (Optional)
@@ -163,7 +177,7 @@ LOG_FILE=/app/logs/processing.log
 2. Go to **Project Settings** → **API**
 3. Copy:
    - **URL**: `SUPABASE_URL`
-   - **service_role key**: `SUPABASE_SERVICE_ROLE_KEY` (keep secret!)
+  - **anon key**: `SUPABASE_ANON_KEY` (keep secret!)
 
 ---
 
@@ -193,7 +207,7 @@ docker run -d \
   --name llm-lead-processor \
   -p 8000:8000 \
   -e SUPABASE_URL="https://xxx.supabase.co" \
-  -e SUPABASE_SERVICE_ROLE_KEY="eyJ..." \
+  -e SUPABASE_ANON_KEY="eyJ..." \
   -e POLL_INTERVAL_SEC=5 \
   -e MAX_CONCURRENCY=3 \
   -v $(pwd)/logs:/app/logs \
@@ -220,7 +234,7 @@ flyctl launch
 
 # Set secrets
 flyctl secrets set SUPABASE_URL="https://xxx.supabase.co"
-flyctl secrets set SUPABASE_SERVICE_ROLE_KEY="eyJ..."
+flyctl secrets set SUPABASE_ANON_KEY="eyJ..."
 
 # Deploy
 flyctl deploy
@@ -254,6 +268,8 @@ docker-compose logs -f llm-backend
 tail -f logs/processing.log
 ```
 
+Note: Avoid logging raw `post_content`, `post_analysis_prompt`, or `post_analysis` in production logs.
+
 ### Log Format
 
 **Console (CYCLE summaries):**
@@ -282,6 +298,9 @@ curl http://localhost:8000/health
 - **processed**: Successfully sent to LLM and saved
 - **skipped**: Already processed (idempotency)
 - **errors**: Failed processing (check stack trace in file log)
+  
+Additionally:
+- `post_analysis`: Populated in `llm_response` when `post_content` exists (or when provided via API override).
 
 ---
 
@@ -402,7 +421,7 @@ volumes:
 
 ## Production Best Practices
 
-1. **Use service role key** (not anon key) for server-side operations
+1. **Ensure RLS policies** allow the anon key to perform required actions
 2. **Set restart policy** to `unless-stopped` or `always`
 3. **Monitor disk usage** (logs can grow large; rotate with logrotate)
 4. **Set up alerting** on health check failures

@@ -9,12 +9,15 @@ FastAPI backend that continuously processes leads using Google Gemini via LangCh
 - Supabase RPC-based join for efficient polling
 - Random API key selection per lead from `gemini_api`
 - Append-only file logging with IST timestamps
+- New: Post analysis generation — reads `all_leads.post_content`, generates a concise two-line `post_analysis`, and stores it in `llm_response.post_analysis`.
 
 ## Repo layout
 
 - `app.py` — FastAPI app + background worker and logging
 - `stage3.py` — Core LLM logic (Gemini scoring + message generation) and Supabase writes
 - `sql/rpc_get_eligible_llm_jobs.sql` — RPC that returns eligible joined rows
+- `sql/rpc_get_eligible_llm_jobs_v2.sql` — RPC v2 driven by `lead_details.sent_to_llm=false`
+- `sql/rpc_get_eligible_llm_jobs_with_post.sql` — RPC that includes `post_content` for post analysis
 - `requirements.txt` — Python dependencies
 - `llm_backend.spec` — (optional) PyInstaller spec for packaging
 
@@ -25,7 +28,7 @@ FastAPI backend that continuously processes leads using Google Gemini via LangCh
 - `lead_details`
   - Columns used: `lead_id`, `name`, `title`, `location`, `company_name`, `experience`, `skills`, `bio`, `profile_url`, `company_page_url`, `sent_to_llm` (bool)
 - `prompts`
-  - Columns used: `user_id` (uuid), `tag`, `wildnet_data`, `scoring_criteria_and_icp`, `message_prompt`, `created_at`
+  - Columns used: `user_id` (uuid), `tag`, `wildnet_data`, `scoring_criteria_and_icp`, `message_prompt`, `post_analysis_prompt` (optional), `created_at`
 - `gemini_api`
   - Columns used: `api_key` (text) — random key is chosen per processed lead
 - Outputs are inserted into `llm_response` (see `stage3.py`)
@@ -43,18 +46,17 @@ Filter:
 - `lead_details.sent_to_llm = false`
 - Join `prompts` on `(user_id, tag)` and pick latest by `created_at`
 
-See SQL in `sql/rpc_get_eligible_llm_jobs.sql`.
+See SQL in `sql/rpc_get_eligible_llm_jobs_with_post.sql` (recommended) or prior versions in `sql/`.
 
 ## Environment variables
 
 - `SUPABASE_URL` — your Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY` — preferred; falls back to `SUPABASE_ANON_KEY`
-- `SUPABASE_ANON_KEY` — only used if service role isn’t provided
+- `SUPABASE_ANON_KEY` — anon key used for all operations (ensure RLS allows required access)
 - `POLL_INTERVAL_SEC` — background poll interval (default: `5`)
 - `MAX_CONCURRENCY` — max concurrent LLM jobs (default: `3`)
 - `LOG_FILE` — path to append-only log file (default: `logs/processing.log`)
 
-> Note: RLS can be disabled, but service role is recommended for server-side writes.
+> Note: Ensure your RLS policies allow the anon key to perform needed reads/writes.
 
 ## Setup
 
@@ -68,7 +70,7 @@ pip install -r requirements.txt
 
 # 3) Export env vars (zsh)
 export SUPABASE_URL="https://<your-project>.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="<service-role-or-anon-key>"
+export SUPABASE_ANON_KEY="<anon-key>"
 # optional tuning
 export POLL_INTERVAL_SEC=5
 export MAX_CONCURRENCY=3
@@ -105,6 +107,7 @@ Request body:
   "wildnet_data": "...",
   "scoring_criteria_and_icp": "...",
   "message_prompt": "...",
+  "post_analysis_prompt": "... optional; overrides RPC/default for post analysis ...",
   "lead": {
     "lead_id": "123",
     "tag": "manufacturing",
@@ -117,7 +120,8 @@ Request body:
     "bio": "...",
     "profile_url": "https://linkedin.com/in/jane",
     "linkedin_url": "https://linkedin.com/in/jane",
-    "company_page_url": "https://acme.com"
+    "company_page_url": "https://acme.com",
+    "post_content": "... optional; overrides DB value ..."
   }
 }
 ```
@@ -125,9 +129,11 @@ Request body:
 ### POST /process-leads
 Process multiple leads in a single request (same contract, `leads` is an array).
 
+Responses include `post_analysis` for each lead.
+
 ### Background worker (auto)
 - Starts on app startup, polls RPC for eligible rows
-- For each row: picks random `gemini_api.api_key`, builds payload, calls `stage3.process_leads([lead], ...)`
+- For each row: picks random `gemini_api.api_key`, builds payload (including `post_content` and optional `post_analysis_prompt` from `prompts`), calls `stage3.process_leads([lead], ...)`
 - After success, `stage3.py` sets `lead_details.sent_to_llm = true` to prevent reprocessing
 
 ## Logging
@@ -158,7 +164,7 @@ Process multiple leads in a single request (same contract, `leads` is an array).
 ## Deployment notes
 
 - You can run with `uvicorn` behind a process manager (systemd, pm2, Docker)
-- Service environment should include `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+- Service environment should include `SUPABASE_URL` and `SUPABASE_ANON_KEY`
 - Optional packaging: `pyinstaller` can use `llm_backend.spec` (not required for dev)
 
 ## License

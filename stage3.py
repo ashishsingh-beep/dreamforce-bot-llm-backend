@@ -1,5 +1,6 @@
 import os
 import json
+from typing import Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -14,8 +15,8 @@ load_dotenv()
 
 
 supabase_url = os.getenv("SUPABASE_URL")
-# Prefer service role for server-side actions (RLS may be disabled but safe)
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+# Use anon key for all operations (RLS rules must permit writes)
+supabase_key = os.getenv("SUPABASE_ANON_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
 # ----- Schemas -----
@@ -28,12 +29,17 @@ class GeminiMessageResponse(BaseModel):
     SUBJECT: str = Field(..., description="A catchy subject line for the outreach email, within 5-7 words.")
     MESSAGE: str = Field(..., description="A personalized outreach message for the lead, within 50-70 words.")
 
+class GeminiPostAnalysisResponse(BaseModel):
+    POST_ANALYSIS: str = Field(
+        ..., description="Exactly two lines. Line 1: concise summary of the post's core message (no hashtags/links). Line 2: actionable insight/opportunity relevant to WildnetEdge services (no hashtags/links). Use a single newline between lines."
+    )
+
 # Load company context
 # with open("stages/wildnetEdge.txt", "r") as f:
 #     wildnet_edge_data = f.read()
 
 # ----- Core function -----
-def process_lead(lead_info: dict, api_key: str, wildnet_data, scoring_criteria_and_ICP, message_prompt) -> dict:
+def process_lead(lead_info: dict, api_key: str, wildnet_data, scoring_criteria_and_ICP, message_prompt, post_analysis_prompt: Optional[str] = None) -> dict:
     """
     1. Score lead (GeminiScoreResponse) using existing scoring prompt (unchanged).
     2. If score >= 50 generate SUBJECT + MESSAGE (GeminiMessageResponse).
@@ -109,6 +115,83 @@ Generate outreach.
         subject = "ineligible"
         message = "ineligible"
 
+    # -------- Post Analysis (always generate) --------
+    post_content = lead_info.get("post_content")
+
+    if not post_content:
+        # Try fetching from DB as fallback
+        try:
+            lead_id = lead_info.get("lead_id")
+            if lead_id:
+                resp_pc = supabase.table("all_leads").select("post_content").eq("lead_id", lead_id).limit(1).execute()
+                rows_pc = (resp_pc.data or [])
+                if rows_pc:
+                    post_content = rows_pc[0].get("post_content")
+        except Exception:
+            post_content = None
+
+    if post_content and isinstance(post_content, str) and post_content.strip():
+        analysis_llm = ChatGoogleGenerativeAI(
+            model='models/gemini-2.5-flash',
+            google_api_key=api_key,
+            temperature=0.4
+        )
+        analysis_parser = PydanticOutputParser(pydantic_object=GeminiPostAnalysisResponse)
+        analysis_format = analysis_parser.get_format_instructions()
+
+        # Use provided prompt if present, otherwise a minimal default that enforces two lines
+        default_prompt = (
+            "Produce exactly two lines. Line 1: Concise neutral summary of the post's main message (no hashtags or links). "
+            "Line 2: Actionable insight/opportunity relevant to WildnetEdge's services (no hashtags or links)."
+        )
+        effective_prompt = (post_analysis_prompt or "").strip() or default_prompt
+
+        analysis_system = SystemMessage(content=f"""
+    You are an expert SDR analyst.
+    Company context (WildnetEdge services):
+    ```{wildnet_data}```
+    """)
+
+        analysis_human = HumanMessage(content=f"""
+    Given this social post content (may include hashtags/links):
+    ```{post_content}```
+
+    Instructions for analysis:
+    {effective_prompt}
+
+    Output format:
+    {analysis_format}
+    """)
+
+        analysis_raw = analysis_llm.invoke([analysis_system, analysis_human])
+        analysis_parsed = analysis_parser.parse(analysis_raw.content)
+        post_analysis = analysis_parsed.POST_ANALYSIS
+        # Enforce exactly two lines after generation (sanitization layer)
+        if post_analysis:
+            txt = post_analysis.strip().replace('\r\n', '\n')
+            lines = [l.strip() for l in txt.split('\n') if l.strip()]
+            # Fallback to sentence split if fewer than 2 lines
+            if len(lines) < 2:
+                sentences = [s.strip() for s in txt.replace('\n', ' ').split('.') if s.strip()]
+                for s in sentences:
+                    if len(lines) >= 2:
+                        break
+                    if s not in lines:
+                        lines.append(s)
+            # Trim to first two
+            if len(lines) > 2:
+                lines = lines[:2]
+            # Hard length cap per line (optional)
+            lines = [l[:400] for l in lines]
+            if len(lines) == 2:
+                post_analysis = '\n'.join(lines)
+            elif len(lines) == 1:
+                post_analysis = f"{lines[0]}\n(No further insight)"
+            else:
+                post_analysis = "No analysis\nNo insight"
+    else:
+        post_analysis = "No post content available.\nNo actionable insight due to missing post content."
+
     result = {
         "lead_id": lead_info.get("lead_id"),
         "name": lead_info.get("name"),
@@ -119,6 +202,7 @@ Generate outreach.
         "should_contact": should_contact,
         "message": message,
         "subject": subject,
+        "post_analysis": post_analysis,
     }
 
     # Persist result and update lead flag in Supabase (mirroring batch behavior)
@@ -144,11 +228,11 @@ Generate outreach.
     return result
 
 # # Optional batch helper
-def process_leads(leads, api_key: str, wildnet_data, scoring_criteria_and_ICP, message_prompt):
+def process_leads(leads, api_key: str, wildnet_data, scoring_criteria_and_ICP, message_prompt, post_analysis_prompt: Optional[str] = None):
     llm_responses = []
     for ld in leads:
         print(f"Processing lead {ld.get('lead_id')} - {ld.get('name')}")
-        result = process_lead(ld, api_key, wildnet_data, scoring_criteria_and_ICP, message_prompt)
+        result = process_lead(ld, api_key, wildnet_data, scoring_criteria_and_ICP, message_prompt, post_analysis_prompt)
         if result:
             llm_responses.append(result)
         else:

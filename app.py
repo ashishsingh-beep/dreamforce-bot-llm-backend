@@ -45,12 +45,14 @@ class LeadIn(BaseModel):
     profile_url: Optional[str] = None
     linkedin_url: Optional[str] = None
     company_page_url: Optional[str] = None
+    post_content: Optional[str] = None
 
 class ProcessRequest(BaseModel):
     api_key: str = Field(..., description="Gemini API key for this batch")
     wildnet_data: str = Field(..., description="WildnetEdge contextual/company data")
     scoring_criteria_and_icp: str = Field(..., description="Scoring criteria and ICP definition")
     message_prompt: str = Field(..., description="Prompt/instructions for outreach message generation")
+    post_analysis_prompt: Optional[str] = Field(None, description="Optional prompt to customize post analysis; if empty, a default will be used")
     leads: List[LeadIn] = Field(..., description="List of lead objects to process")
 
 class LeadResult(BaseModel):
@@ -64,6 +66,7 @@ class LeadResult(BaseModel):
     should_contact: Optional[int]
     message: Optional[str]
     subject: Optional[str]
+    post_analysis: Optional[str]
 
 class ProcessResponse(BaseModel):
     results: List[LeadResult]
@@ -76,6 +79,7 @@ class ProcessSingleRequest(BaseModel):
     wildnet_data: str = Field(..., description="WildnetEdge contextual/company data")
     scoring_criteria_and_icp: str = Field(..., description="Scoring criteria and ICP definition")
     message_prompt: str = Field(..., description="Prompt/instructions for outreach message generation")
+    post_analysis_prompt: Optional[str] = Field(None, description="Optional prompt to customize post analysis; if empty, a default will be used")
     lead: LeadIn = Field(..., description="Lead object to process")
 
 class ProcessSingleResponse(BaseModel):
@@ -102,7 +106,8 @@ async def process_leads_endpoint(payload: ProcessRequest):
                 payload.api_key,
                 payload.wildnet_data,
                 payload.scoring_criteria_and_icp,
-                payload.message_prompt
+                payload.message_prompt,
+                payload.post_analysis_prompt,
             )
         )
     except Exception as e:
@@ -131,6 +136,7 @@ async def process_single_lead_endpoint(payload: ProcessSingleRequest):
                 payload.wildnet_data,
                 payload.scoring_criteria_and_icp,
                 payload.message_prompt,
+                payload.post_analysis_prompt,
             ),
         )
     except Exception as e:
@@ -146,8 +152,6 @@ async def process_single_lead_endpoint(payload: ProcessSingleRequest):
 
 # Env configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-# Prefer service role if available, otherwise fall back to anon (RLS disabled per user, but safe default)
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 POLL_INTERVAL_SEC = float(os.getenv("POLL_INTERVAL_SEC", "5"))
@@ -173,9 +177,9 @@ def _ist_now_str() -> str:
     return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 def _make_supabase_client() -> Client:
-    key = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY
+    key = SUPABASE_ANON_KEY
     if not SUPABASE_URL or not key:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_*_KEY env for background worker")
+        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_ANON_KEY env for background worker")
     return create_client(SUPABASE_URL, key)
 
 async def _pick_random_api_key(sb: Client) -> Optional[str]:
@@ -188,13 +192,18 @@ async def _pick_random_api_key(sb: Client) -> Optional[str]:
     except Exception:
         return None
 
-def _lead_already_processed(sb: Client, lead_id: Optional[str]) -> bool:
+def _lead_already_processed_with_analysis(sb: Client, lead_id: Optional[str]) -> bool:
+    """Return True only if lead already has a non-empty post_analysis.
+    Allows reprocessing when post_analysis not yet generated."""
     if not lead_id:
         return False
     try:
-        resp = sb.table("llm_response").select("lead_id").eq("lead_id", lead_id).limit(1).execute()
+        resp = sb.table("llm_response").select("lead_id, post_analysis").eq("lead_id", lead_id).limit(1).execute()
         data = resp.data or []
-        return len(data) > 0
+        if not data:
+            return False
+        pa = (data[0] or {}).get("post_analysis")
+        return isinstance(pa, str) and pa.strip() != ""
     except Exception:
         return False
 
@@ -213,11 +222,13 @@ async def _process_row(row: Dict[str, Any], api_key: str) -> None:
         "profile_url": row.get("profile_url"),
         "linkedin_url": row.get("linkedin_url"),
         "company_page_url": row.get("company_page_url"),
+        "post_content": row.get("post_content"),
     }
 
     wildnet_data = row.get("wildnet_data")
     scoring_criteria_and_icp = row.get("scoring_criteria_and_icp")
     message_prompt = row.get("message_prompt")
+    post_analysis_prompt = row.get("post_analysis_prompt")
 
     loop = asyncio.get_event_loop()
     # Use thread to avoid blocking the event loop; stage3.process_leads is sync
@@ -229,24 +240,29 @@ async def _process_row(row: Dict[str, Any], api_key: str) -> None:
             wildnet_data,
             scoring_criteria_and_icp,
             message_prompt,
+			post_analysis_prompt,
         ),
     )
 
 async def _worker_loop():
     sb = _make_supabase_client()
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    cycle = 0
 
     while True:
         try:
             cycle_start = time.monotonic()
-            # Fetch eligible rows via RPC (v2 driven by lead_details.sent_to_llm=false)
-            rpc_name = "rpc_get_eligible_llm_jobs_v2"
+            # Fetch eligible rows via RPC including post content
+            rpc_name = "rpc_get_eligible_llm_jobs"
+            # Short poll log (no secrets)
+            print(f"{_ist_now_str()} | POLL | cycle={cycle} rpc={rpc_name}")
             resp = sb.rpc(rpc_name, {}).execute()
             rows = resp.data or []
 
             if not rows:
                 duration = time.monotonic() - cycle_start
-                print(f"{_ist_now_str()} | CYCLE | total=0, processed=0, skipped=0, errors=0, duration={duration:.2f}s")
+                print(f"{_ist_now_str()} | EMPTY | cycle={cycle} total=0 duration={duration:.2f}s")
+                cycle += 1
                 await asyncio.sleep(POLL_INTERVAL_SEC)
                 continue
 
@@ -259,7 +275,7 @@ async def _worker_loop():
                     try:
                         # Idempotency guard: if already has a response, mark sent_to_llm and skip
                         lead_id = row.get('lead_id')
-                        if _lead_already_processed(sb, lead_id):
+                        if _lead_already_processed_with_analysis(sb, lead_id):
                             try:
                                 sb.table("lead_details").update({"sent_to_llm": True}).eq("lead_id", lead_id).execute()
                             except Exception:
@@ -312,6 +328,7 @@ async def _worker_loop():
             print(
                 f"{_ist_now_str()} | CYCLE | total={total}, processed={processed_count}, skipped={skipped_count}, errors={error_count}, duration={duration:.2f}s"
             )
+            cycle += 1
         except Exception:
             # Avoid crashing the loop on transient issues
             await asyncio.sleep(POLL_INTERVAL_SEC)
@@ -321,6 +338,25 @@ async def _worker_loop():
 async def _on_startup():
     # Start background worker
     app.state.worker = asyncio.create_task(_worker_loop())
+    # Log sanitized startup configuration
+    try:
+        rpc_used = "rpc_get_eligible_llm_jobs"
+        print(
+            f"{_ist_now_str()} | STARTUP | poll={POLL_INTERVAL_SEC}s concurrency={MAX_CONCURRENCY} rpc={rpc_used} log_file={LOG_FILE}"
+        )
+        # Multi-line detail (avoid secrets)
+        print(
+            "CONFIG SUMMARY:\n"
+            f"  SUPABASE_URL set: {'yes' if bool(SUPABASE_URL) else 'no'}\n"
+            f"  Using key type: anon\n"
+            f"  Poll interval (sec): {POLL_INTERVAL_SEC}\n"
+            f"  Max concurrency: {MAX_CONCURRENCY}\n"
+            f"  Worker RPC: {rpc_used}\n"
+            f"  Post analysis enabled: yes\n"
+            f"  Log file: {LOG_FILE}\n"
+        )
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")
@@ -347,7 +383,6 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
-
 
 
 # uvicorn app:app --reload --host 0.0.0.0 --port 8000
